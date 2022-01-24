@@ -44,9 +44,8 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    _tunnels: list[GatewayDescriptor]
-    _gateway_ip: str = ""
-    _gateway_port: int = DEFAULT_MCAST_PORT
+    _found_tunnels: list[GatewayDescriptor]
+    _selected_tunnel: GatewayDescriptor | None
 
     @staticmethod
     @callback
@@ -59,7 +58,8 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if self._async_current_entries():
             return self.async_abort(reason="single_instance_allowed")
 
-        self._tunnels = []
+        self._found_tunnels = []
+        self._selected_tunnel = None
         return await self.async_step_type()
 
     async def async_step_type(self, user_input: dict | None = None) -> FlowResult:
@@ -75,7 +75,7 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if connection_type == CONF_KNX_ROUTING:
                 return await self.async_step_routing()
 
-            if connection_type == CONF_KNX_TUNNELING and self._tunnels:
+            if connection_type == CONF_KNX_TUNNELING and self._found_tunnels:
                 return await self.async_step_tunnel()
 
             return await self.async_step_manual_tunnel()
@@ -88,7 +88,7 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if gateways:
             # add automatic only if a gateway responded
             supported_connection_types.insert(0, CONF_KNX_AUTOMATIC)
-            self._tunnels = [
+            self._found_tunnels = [
                 gateway for gateway in gateways if gateway.supports_tunnelling
             ]
 
@@ -103,7 +103,7 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_manual_tunnel(
         self, user_input: dict | None = None
     ) -> FlowResult:
-        """General setup."""
+        """Manually configure tunnel connection parameters. Fields default to preselected gateway if one was found."""
         if user_input is not None:
             return self.async_create_entry(
                 title=f"{CONF_KNX_TUNNELING.capitalize()} @ {user_input[CONF_HOST]}",
@@ -125,9 +125,15 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         errors: dict = {}
+        ip_address = ""
+        port = DEFAULT_MCAST_PORT
+        if self._selected_tunnel is not None:
+            ip_address = self._selected_tunnel.ip_addr
+            port = self._selected_tunnel.port
+
         fields = {
-            vol.Required(CONF_HOST, default=self._gateway_ip): str,
-            vol.Required(CONF_PORT, default=self._gateway_port): vol.Coerce(int),
+            vol.Required(CONF_HOST, default=ip_address): str,
+            vol.Required(CONF_PORT, default=port): vol.Coerce(int),
             vol.Required(
                 CONF_KNX_INDIVIDUAL_ADDRESS, default=XKNX.DEFAULT_ADDRESS
             ): str,
@@ -146,30 +152,21 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_tunnel(self, user_input: dict | None = None) -> FlowResult:
         """Select a tunnel from a list. Will be skipped if the gateway scan was unsuccessful or if only one gateway was found."""
         if user_input is not None:
-            gateway: GatewayDescriptor = next(
-                gateway
-                for gateway in self._tunnels
-                if user_input[CONF_KNX_GATEWAY] == str(gateway)
+            self._selected_tunnel = next(
+                tunnel
+                for tunnel in self._found_tunnels
+                if user_input[CONF_KNX_GATEWAY] == str(tunnel)
             )
+            return await self.async_step_manual_tunnel()
 
-            self._gateway_ip = gateway.ip_addr
-            self._gateway_port = gateway.port
-
+        #  skip this step if the user has only one unique gateway.
+        if len(self._found_tunnels) == 1:
+            self._selected_tunnel = self._found_tunnels[0]
             return await self.async_step_manual_tunnel()
 
         errors: dict = {}
-        tunnel_repr = {
-            str(tunnel) for tunnel in self._tunnels if tunnel.supports_tunnelling
-        }
-
-        #  skip this step if the user has only one unique gateway.
-        if len(tunnel_repr) == 1:
-            _gateway: GatewayDescriptor = self._tunnels[0]
-            self._gateway_ip = _gateway.ip_addr
-            self._gateway_port = _gateway.port
-            return await self.async_step_manual_tunnel()
-
-        fields = {vol.Required(CONF_KNX_GATEWAY): vol.In(tunnel_repr)}
+        tunnels_repr = {str(tunnel) for tunnel in self._found_tunnels}
+        fields = {vol.Required(CONF_KNX_GATEWAY): vol.In(tunnels_repr)}
 
         return self.async_show_form(
             step_id="tunnel", data_schema=vol.Schema(fields), errors=errors
