@@ -1,4 +1,4 @@
-""Fixtures for Sonarr integration tests."""
+"""Fixtures for Sonarr integration tests."""
 from collections.abc import Generator
 import json
 from unittest.mock import MagicMock, patch
